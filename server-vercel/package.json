@@ -1,0 +1,7 @@
+{
+  "name": "kompaniya-push-relay-vercel",
+  "private": true,
+  "dependencies": {
+    "firebase-admin": "^12.6.0"
+  }
+}
