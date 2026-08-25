@@ -3,5 +3,8 @@
     "api/notify.js": {
       "maxDuration": 15
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/", "destination": "/api/index" }
+  ]
 }
