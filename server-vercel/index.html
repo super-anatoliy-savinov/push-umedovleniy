@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kompaniya — push relay</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    background: #0b0f1a;
+    color: #e8ecf5;
+    font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 24px 18px 60px;
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  p.sub { color: #8b93a7; margin-top: 0; font-size: 14px; }
+  .card {
+    background: #141a2b;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
+    padding: 18px;
+    margin-bottom: 18px;
+  }
+  .row { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 14px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .ok { background: #2be3a6; }
+  .bad { background: #ff5c72; }
+  .pending { background: #8b93a7; }
+  label { display: block; font-size: 13px; color: #8b93a7; margin: 12px 0 6px; }
+  input, textarea {
+    width: 100%;
+    box-sizing: border-box;
+    background: #1c2338;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    padding: 10px 12px;
+    color: #e8ecf5;
+    font-size: 14px;
+  }
+  button {
+    margin-top: 16px;
+    width: 100%;
+    background: #2be3a6;
+    color: #06110c;
+    border: none;
+    border-radius: 10px;
+    padding: 12px;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; cursor: default; }
+  pre {
+    background: #0b0f1a;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+    padding: 12px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin-top: 14px;
+  }
+  .err { color: #ff5c72; }
+  code { background: #1c2338; padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+  <h1>🔔 Kompaniya — сервер push-уведомлений</h1>
+  <p class="sub">Эта страница сама проверяет, всё ли настроено, и позволяет отправить тестовый push прямо отсюда — без консоли и curl.</p>
+
+  <div class="card">
+    <div class="row"><span class="dot pending" id="dot-server"></span><span id="txt-server">Проверяю сервер…</span></div>
+    <div class="row"><span class="dot pending" id="dot-firebase"></span><span id="txt-firebase">Проверяю Firebase Admin…</span></div>
+    <div class="row"><span class="dot pending" id="dot-secret"></span><span id="txt-secret">Проверяю NOTIFY_SECRET…</span></div>
+    <pre id="status-error" style="display:none" class="err"></pre>
+  </div>
+
+  <div class="card">
+    <strong>Тестовая отправка push</strong>
+    <p class="sub">Найди два реальных uid в Firebase Console → Firestore → users (id документа — это и есть uid), и свой секрет — тот же, что в переменной <code>NOTIFY_SECRET</code> на Vercel.</p>
+    <label>fromUid (от кого, чьё имя увидит получатель)</label>
+    <input id="fromUid" placeholder="uid отправителя">
+    <label>toUid (кому — у него должен быть открыт запуск приложения хотя бы раз)</label>
+    <input id="toUid" placeholder="uid получателя">
+    <label>Текст сообщения</label>
+    <input id="text" placeholder="Привет! Это тест" value="Тестовое уведомление 🔔">
+    <label>Секрет (NOTIFY_SECRET)</label>
+    <input id="secret" placeholder="твой секрет" type="password">
+    <button id="sendBtn" onclick="sendTest()">Отправить тестовый push</button>
+    <pre id="result" style="display:none"></pre>
+  </div>
+
+  <p class="sub">Эндпоинт для приложения: <code>POST /api/notify</code> с заголовком <code>x-notify-secret</code> и телом <code>{"fromUid","toUid","text"}</code>.</p>
+
+<script>
+async function loadStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const data = await r.json();
+
+    setDot('server', true, 'Сервер отвечает');
+    setDot('firebase', data.firebase === 'connected', data.firebase === 'connected'
+      ? `Firebase Admin подключён (проект: ${data.projectId || '?'})`
+      : 'Firebase Admin НЕ подключён');
+    setDot('secret', data.notifySecretConfigured, data.notifySecretConfigured
+      ? 'NOTIFY_SECRET задан на сервере'
+      : 'NOTIFY_SECRET НЕ задан на сервере');
+
+    const errBox = document.getElementById('status-error');
+    if (data.error) {
+      errBox.style.display = 'block';
+      errBox.textContent = 'Причина: ' + data.error;
+    } else {
+      errBox.style.display = 'none';
+    }
+  } catch (e) {
+    setDot('server', false, 'Сервер не отвечает — сайт задеплоен, но /api/status недоступен');
+    setDot('firebase', false, '—');
+    setDot('secret', false, '—');
+    const errBox = document.getElementById('status-error');
+    errBox.style.display = 'block';
+    errBox.textContent = String(e);
+  }
+}
+
+function setDot(id, ok, text) {
+  document.getElementById('dot-' + id).className = 'dot ' + (ok ? 'ok' : 'bad');
+  document.getElementById('txt-' + id).textContent = text;
+}
+
+async function sendTest() {
+  const btn = document.getElementById('sendBtn');
+  const resultBox = document.getElementById('result');
+  btn.disabled = true;
+  btn.textContent = 'Отправляю…';
+  resultBox.style.display = 'block';
+  resultBox.className = '';
+  resultBox.textContent = '...';
+
+  try {
+    const r = await fetch('/api/notify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-notify-secret': document.getElementById('secret').value,
+      },
+      body: JSON.stringify({
+        fromUid: document.getElementById('fromUid').value.trim(),
+        toUid: document.getElementById('toUid').value.trim(),
+        text: document.getElementById('text').value.trim(),
+      }),
+    });
+    const data = await r.json();
+    resultBox.textContent = `HTTP ${r.status}\n` + JSON.stringify(data, null, 2);
+    if (!r.ok) resultBox.className = 'err';
+  } catch (e) {
+    resultBox.className = 'err';
+    resultBox.textContent = 'Ошибка сети: ' + e;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Отправить тестовый push';
+  }
+}
+
+loadStatus();
+</script>
+</body>
+</html>

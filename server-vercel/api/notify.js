@@ -1,39 +1,33 @@
-// Serverless-функция для Vercel — замена server/index.js (Express-сервер
-// для Render). Разница: здесь нет своего постоянно работающего процесса —
-// Vercel запускает этот код только по запросу и сам выключает после
-// ответа, поэтому нет самого понятия "засыпания" и пингер не нужен.
-//
-// Работает с теми же переменными окружения, что и раньше:
-//   FIREBASE_SERVICE_ACCOUNT — весь JSON сервисного аккаунта одной строкой
-//   NOTIFY_SECRET            — тот же секрет, что в --dart-define=NOTIFY_SECRET
-//
-// Приложению НИЧЕГО менять не нужно — это тот же самый POST /notify с тем
-// же телом запроса, просто на другом домене (вместо
-// https://push-umedovleniy.onrender.com будет что-то вроде
-// https://твой-проект.vercel.app).
+// POST /api/notify — вызывается приложением после отправки сообщения в
+// чате (см. lib/services/notify_service.dart в Flutter-проекте). Находит
+// FCM-токен получателя в Firestore и шлёт push через Firebase Admin SDK.
 
-const admin = require('firebase-admin');
-
-// Firebase Admin инициализируем ОДИН раз и переиспользуем между вызовами
-// (Vercel может "разогревать" контейнер между запросами) — если сделать
-// это внутри handler на каждый вызов, будет ошибка "app already exists".
-if (!admin.apps.length) {
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-}
-
-const db = admin.firestore();
-const messaging = admin.messaging();
-const SECRET = process.env.NOTIFY_SECRET || '';
+const { ensureInitialized } = require('../lib/firebase');
 
 module.exports = async (req, res) => {
+  if (req.method === 'GET') {
+    return res.status(200).json({
+      info: 'Это API-эндпоинт для отправки push. Открой корень сайта (/) для диагностики и теста через форму.',
+      usage: 'POST { fromUid, toUid, text } с заголовком x-notify-secret',
+    });
+  }
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'method not allowed' });
   }
 
-  if (!SECRET || req.headers['x-notify-secret'] !== SECRET) {
+  let admin;
+  try {
+    admin = ensureInitialized();
+  } catch (e) {
+    console.error('Firebase init error:', e.message);
+    return res.status(500).json({ error: 'server misconfigured', detail: e.message });
+  }
+
+  const SECRET = process.env.NOTIFY_SECRET || '';
+  if (!SECRET.trim()) {
+    return res.status(500).json({ error: 'server misconfigured', detail: 'NOTIFY_SECRET не задан на сервере' });
+  }
+  if (req.headers['x-notify-secret'] !== SECRET) {
     return res.status(401).json({ error: 'unauthorized' });
   }
 
@@ -42,6 +36,9 @@ module.exports = async (req, res) => {
     return res.status(400).json({ error: 'fromUid, toUid и text обязательны' });
   }
 
+  const db = admin.firestore();
+  const messaging = admin.messaging();
+
   try {
     const [senderDoc, recipientDoc] = await Promise.all([
       db.collection('users').doc(fromUid).get(),
@@ -49,12 +46,14 @@ module.exports = async (req, res) => {
     ]);
 
     if (!recipientDoc.exists) {
-      return res.status(404).json({ error: 'recipient not found' });
+      return res.status(404).json({ error: 'recipient not found', detail: `Нет пользователя users/${toUid}` });
     }
 
     const recipient = recipientDoc.data();
     const token = recipient.fcmToken;
     if (!token) {
+      // Нормальная ситуация: получатель ещё не запускал приложение с этим
+      // обновлением, либо не дал разрешение на уведомления.
       return res.status(200).json({ skipped: 'no fcm token' });
     }
 
@@ -85,10 +84,10 @@ module.exports = async (req, res) => {
         return res.status(200).json({ skipped: 'stale token, cleared' });
       }
       console.error('FCM send error:', err);
-      return res.status(500).json({ error: 'send failed' });
+      return res.status(500).json({ error: 'send failed', detail: err.message, code: err.code });
     }
   } catch (err) {
-    console.error('Unexpected error in /api/notify:', err);
-    return res.status(500).json({ error: 'internal error' });
+    console.error('Unexpected /api/notify error:', err);
+    return res.status(500).json({ error: 'internal error', detail: err.message });
   }
 };
