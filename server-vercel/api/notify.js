@@ -31,10 +31,13 @@ module.exports = async (req, res) => {
     return res.status(401).json({ error: 'unauthorized' });
   }
 
-  const { fromUid, toUid, text } = req.body || {};
+  const { fromUid, toUid, text, type, postId, postTitle } = req.body || {};
   if (!fromUid || !toUid || !text) {
     return res.status(400).json({ error: 'fromUid, toUid и text обязательны' });
   }
+  // type: 'group' — сообщение из группового чата повода (нужен postId,
+  // чтобы по тапу открыть именно этот чат); иначе — обычный личный чат 1-1.
+  const isGroup = type === 'group' && !!postId;
 
   const db = admin.firestore();
   const messaging = admin.messaging();
@@ -58,23 +61,34 @@ module.exports = async (req, res) => {
     }
 
     const sender = senderDoc.exists ? senderDoc.data() : {};
+    const senderName = sender.name || 'Кто-то';
     const shortText = text.length > 120 ? `${text.slice(0, 120)}…` : text;
+
+    // Более живое оформление push: для группового чата в заголовке — сам
+    // повод (чтобы сразу понятно, из какой компании сообщение), а не
+    // просто имя автора; для личного чата — имя собеседника с иконкой.
+    const title = isGroup ? `👥 ${postTitle || 'Компания'}` : `💬 ${senderName}`;
+    const body = isGroup ? `${senderName}: ${shortText}` : shortText;
 
     try {
       await messaging.send({
         token,
-        notification: {
-          title: sender.name || 'Новое сообщение',
-          body: shortText,
-        },
+        notification: { title, body },
         data: {
-          type: 'chat',
+          type: isGroup ? 'group' : 'chat',
           otherUid: fromUid,
-          otherName: sender.name || '',
+          otherName: senderName,
           otherPhotoUrl: sender.photoUrl || '',
+          postId: isGroup ? postId : '',
+          postTitle: isGroup ? (postTitle || '') : '',
         },
         android: {
-          notification: { channelId: 'messages_channel' },
+          notification: {
+            channelId: 'messages_channel',
+            // Отдельная иконка группового аватара красивее смотрится, но
+            // достаточно и стандартной — главное, чтобы заголовок был
+            // информативным (уже решено выше).
+          },
         },
       });
       return res.status(200).json({ sent: true });
